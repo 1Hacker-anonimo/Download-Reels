@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, stream_with_context
+from flask import Flask, request, Response, redirect, stream_with_context
 import os, yt_dlp, requests
 
 app = Flask(__name__)
@@ -34,17 +34,14 @@ INDEX_PAGE = '''
         <h1>GLADIADOR</h1>
         <p class="sub">Cole o link do Instagram e o vídeo baixa automaticamente.</p>
 
-        <form id="form" action="/" method="get">
+        <form id="form" action="/dl" method="get">
             <input id="url" name="url" type="url" placeholder="https://www.instagram.com/reel/..." required>
             <button class="btn" type="submit">Baixar</button>
         </form>
 
-        <div class="foot">
-            Feito por <strong>GLADIADOR</strong> – 2026
-        </div>
+        <div class="foot">Feito por <strong>GLADIADOR</strong> – 2026</div>
     </div>
 
-    <!-- loader -->
     <div id="loader" class="overlay">
         <div class="spinner"></div>
         <p>baixando...</p>
@@ -52,26 +49,22 @@ INDEX_PAGE = '''
 
     <script>
         const form  = document.getElementById('form');
-        const input = document.getElementById('url');
         const load  = document.getElementById('loader');
-
         form.addEventListener('submit', () => load.classList.add('show'));
-        input.addEventListener('paste', () => {
-            setTimeout(() => {
-                load.classList.add('show');
-                form.submit();
-            }, 100);
-        });
     </script>
 </body>
 </html>
 '''
 
-@app.route("/", methods=["GET"])
-def index():
+@app.route("/")
+def home():
+    return INDEX_PAGE
+
+@app.route("/dl")
+def download():
     url = request.args.get("url")
     if not url:
-        return INDEX_PAGE
+        return redirect("/")
 
     username = os.getenv("IG_USER")
     password = os.getenv("IG_PASS")
@@ -98,7 +91,7 @@ def index():
     def generate():
         with requests.get(video_url, stream=True) as r:
             r.raise_for_status()
-            for chunk in r.iter_content(chunk_size=8192):
+            for chunk in r.iter_content(chunk_size8192):
                 if chunk:
                     yield chunk
 
