@@ -1,248 +1,124 @@
-from flask import Flask, request, Response, redirect, stream_with_context
-import os, yt_dlp, requests, logging
-from requests.exceptions import RequestException
-import yt_dlp.utils
+app.py
+──────
+import os, re, json, requests, tempfile, mimetypes
+from flask import Flask, request, Response, render_template_string, redirect, abort
 
-logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
+sess = requests.Session()
+sess.headers.update({
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
+    "Accept-Language": "pt-BR,pt=0.9",
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+})
 
-# ---------- HTML ----------
-INDEX_PAGE = '''
-<!DOCTYPE html>
-<html lang="pt-BR">
+def username_from_url(url: str) -> str:
+    m = re.search(r"instagram\.com/([^/?]+)", url)
+    return m.group(1) if m else url.strip("/@ ")
+
+def ig_public_stories(username: str):
+    r = sess.get(f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}")
+    if r.status_code == 404: abort(404, "Perfil não existe")
+    if r.status_code == 401: abort(401, "login_required – troque de IP ou use cookie fallback")
+    data = r.json()
+    user = data["data"]["user"]
+    if user["is_private"]: abort(403, "Perfil privado – impossível baixar stories")
+    user_id = user["id"]
+    r = sess.get(
+        f"https://i.instagram.com/api/v1/feed/reels_media/?reel_ids={user_id}",
+        headers={"X-IG-App-ID": "936619743392459"}
+    )
+    if r.status_code != 200 or not r.json().get("reels"): return []
+    reel = r.json()["reels"][user_id]
+    items = []
+    for m in reel.get("items", []):
+        media_id = m["id"]
+        is_video = m["media_type"] == 2
+        if is_video:
+            url = m["video_versions"][0]["url"]
+            thumb = m.get("image_versions2", {}).get("candidates", [{}])[0].get("url", "")
+        else:
+            url = m["image_versions2"]["candidates"][0]["url"]
+            thumb = url
+        items.append({"id": media_id, "url": url, "is_video": is_video, "thumbnail": thumb})
+    return items
+
+HTML_BASE = """<!doctype html>
+<html lang="pt-BR" data-bs-theme="dark">
 <head>
-    <meta charset="UTF-8">
-    <title>GLADIADOR – Downloader</title>
-    <meta name="viewport" content width="device-width, initial-scale=1">
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,Roboto,Arial,sans-serif}
-        body{background:#0a0a0a;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-        .card{background:#111;border:1px solid #222;border-radius:12px;padding:40px 30px;max-width:420px;width:100%;text-align:center;box-shadow:0 0 25px #ff004433}
-        h1{color:#ff0044;font-size:2.4rem;margin-bottom:12px;letter-spacing:1px;text-transform:uppercase}
-        .sub{color:#aaa;font-size:1rem;margin-bottom:25px}
-        form{display:flex;flex-direction:column;gap:15px}
-        input[type=url]{background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;padding:14px 16px;font-size:1rem;transition:border .2s}
-        input[type=url]:focus{border-color:#ff0044;outline:none}
-        .btn{background:#ff0044;color:#fff;border:none;border-radius:6px;padding:14px;font-size:1.05rem;font-weight:bold;cursor:pointer;transition:background .2s}
-        .btn:hover{background:#e6003d}
-        .foot{margin-top:30px;font-size:.75rem;color:#555}
-        .overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#000d;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:999}
-        .overlay.show{display:flex}
-        .spinner{width:50px;height:50px;border:5px solid #222;border-top-color:#ff0044;border-radius:50%;animation:spin 1s linear infinite}
-        @keyframes spin{to{transform:rotate(360deg)}}
-        .overlay p{margin-top:15px;color:#ff0044;font-weight:bold}
-
-        /* ----- menu hamburger ----- */
-        .menu-icon{position:fixed;top:20px;left:20px;cursor:pointer;z-index:1001}
-        .menu-icon span{display:block;width:28px;height:3px;background:#ff0044;margin:6px 0;transition:.3s}
-        .side-panel{position:fixed;top:0;left:-50%;width:50%;height:100%;background:#111;border-right:1px solid #222;padding:30px;overflow-y:auto;transition:left .3s;z-index:1000}
-        .side-panel.show{left:0}
-        .side-panel h2{color:#ff0044;margin-bottom:15px}
-        .side-panel p, .side-panel li{color:#ccc;font-size:.9rem;line-height:1.4;margin-bottom:10px}
-        .side-panel ul{margin-left:20px}
-        .side-panel input{width:100%;margin-bottom:10px}
-        .side-panel .btn{width:100%;margin-bottom:20px}
-    </style>
+  <meta charset="utf-8">
+  <title>StorySaver – Download sem login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body{background:#111;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+    .logo{font-size:1.8rem;font-weight:700;background:linear-gradient(45deg,#833ab4,#fd1d1d,#fcb045);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+    .card-img-top{height:220px;object-fit:cover;}
+    .btn-download{background:#fd1d1d;border:none;color:#fff}
+    .btn-download:hover{background:#e14a4a}
+  </style>
 </head>
 <body>
-
-    <!-- ícone hambúrguer -->
-    <div class="menu-icon" onclick="togglePanel()">
-        <span></span><span></span><span></span>
+<nav class="navbar navbar-dark bg-dark border-bottom">
+  <div class="container">
+    <span class="logo">StorySaver</span>
+  </div>
+</nav>
+<div class="container py-4">
+  <div class="text-center mb-4">
+    <h1 class="fw-bold">Baixe stories de perfis públicos</h1>
+    <p class="lead">Sem login, sem app, direto no navegador.</p>
+  </div>
+  <form class="row g-2 justify-content-center" action="/story" method="get">
+    <div class="col-12 col-md-6">
+      <input type="text" class="form-control form-control-lg" name="url"
+             placeholder="@usuario ou URL completa" required>
     </div>
-
-    <!-- painel lateral -->
-    <div id="sidePanel" class="side-panel">
-        <h2>Instagram Stories</h2>
-        <p>O perfil DEVE ser público. Copie o link da foto/vídeo dentro do story.</p>
-        <ol>
-            <li>Abra o perfil público no navegador.</li>
-            <li>Clique na story desejada.</li>
-            <li>Copie o URL (deve conter /stories/).</li>
-            <li>Coloque abaixo e clique em “Baixar Story”.</li>
-        </ol>
-        <form action="/dl" method="get">
-            <input name="url" type="url" placeholder="https://www.instagram.com/stories/..." required>
-            <button class="btn" type="submit">Baixar Story</button>
-        </form>
-
-        <h2>YouTube</h2>
-        <p>Cole o link do vídeo e escolha o formato.</p>
-        <form id="ytForm">
-            <input id="ytUrl" type="url" placeholder="https://youtu.be/..." required>
-            <button class="btn" type="button" onclick="downloadYt('mp4')">Vídeo MP4</button>
-            <button class="btn" type="button" onclick="downloadYt('mp3')">Áudio MP3</button>
-        </form>
+    <div class="col-auto">
+      <button class="btn btn-download btn-lg px-4">Buscar</button>
     </div>
-
-    <!-- conteúdo principal -->
-    <div class="card">
-        <h1>GLADIADOR</h1>
-        <p class="sub">Cole o link do Instagram e o vídeo baixa automaticamente.</p>
-
-        <form id="form" action="/dl" method="get">
-            <input name="url" type="url" placeholder="https://www.instagram.com/reel/..." required>
-            <button class="btn" type="submit">Baixar</button>
-        </form>
-
-        <div class="foot">Feito por <strong>GLADIADOR</strong> – 2026</div>
+  </form>
+  {% if stories %}
+  <hr>
+  <h4 class="mb-3">Stories de <span class="text-primary">@{{ username }}</span></h4>
+  <div class="row g-3">
+  {% for s in stories %}
+    <div class="col-6 col-md-4 col-lg-3">
+      <div class="card h-100">
+        <img src="{{ s.thumbnail }}" class="card-img-top">
+        <div class="card-body d-flex flex-column">
+          <span class="badge bg-secondary mb-2">{{ "Vídeo" if s.is_video else "Foto" }}</span>
+          <a href="{{ s.url }}" class="btn btn-download mt-auto" download>
+            Baixar
+          </a>
+        </div>
+      </div>
     </div>
-
-    <!-- loader -->
-    <div id="loader" class="overlay">
-        <div class="spinner"></div>
-        <p>baixando...</p>
-    </div>
-
-    <script>
-        function togglePanel(){
-            document.getElementById('sidePanel').classList.toggle('show');
-        }
-
-        function showLoader(){
-            const l = document.getElementById('loader');
-            l.classList.add('show');
-            setTimeout(() => l.classList.remove('show'), 1000);
-        }
-
-        // forms normais
-        document.getElementById('form').addEventListener('submit', showLoader);
-
-        // youtube
-        function downloadYt(fmt){
-            const url = document.getElementById('ytUrl').value.trim();
-            if(!url) return alert('Cole um link do YouTube.');
-            showLoader();
-            // abre a rota /yt com parâmetros
-            window.location.href = `/yt?url=${encodeURIComponent(url)}&fmt=${fmt}`;
-        }
-    </script>
+  {% endfor %}
+  </div>
+  {% endif %}
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
-</html>
-'''
+</html>"""
 
-# ---------- rotas ----------
 @app.route("/")
-def home():
-    return INDEX_PAGE
+def index():
+    return render_template_string(HTML_BASE, stories=None)
 
-@app.route("/dl")          # Instagram (feed, reel, stories)
-def download():
-    url = request.args.get("url")
-    if not url:
-        return redirect("/")
-
-    username = os.getenv("IG_USER")
-    password = os.getenv("IG_PASS")
-    if not username or not password:
-        return "Configure IG_USER e IG_PASS no Render", 500
-
-    ydl_opts = {
-        "username": username,
-        "password": password,
-        "format": "best[ext=mp4]",
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-    }
-
+@app.route("/story")
+def story_list():
+    url_or_user = request.args.get("url") or ""
+    if not url_or_user: return redirect("/")
+    username = username_from_url(url_or_user)
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            video_url = info["url"]
-            filename = f"{info['id']}.mp4"
-    except yt_dlp.utils.DownloadError as e:
-        logging.exception("yt-dlp falhou")
-        return f"Erro ao obter vídeo: {e}", 400
+        stories = ig_public_stories(username)
     except Exception as e:
-        logging.exception("Exceção geral ao extrair")
-        return f"Erro desconhecido: {e}", 500
-
-    def generate():
-        try:
-            with requests.get(video_url, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=16*1024):
-                    if chunk:
-                        yield chunk
-        except RequestException:
-            logging.exception("Erro no stream")
-            return
-        except Exception:
-            logging.exception("Exceção geral no stream")
-            return
-
-    return Response(
-        stream_with_context(generate()),
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "video/mp4",
-        }
-    )
-
-@app.route("/yt")          # YouTube (vídeo ou mp3)
-def youtube():
-    url = request.args.get("url")
-    fmt = request.args.get("fmt")          # mp4 ou mp3
-    if not url or fmt not in ("mp4", "mp3"):
-        return redirect("/")
-
-    if fmt == "mp3":
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "outtmpl": "%(id)s.%(ext)s",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        }
-    else:  # mp4
-        ydl_opts = {
-            "format": "best[ext=mp4]",
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "outtmpl": "%(id)s.%(ext)s",
-        }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            media_url = info["url"]
-            filename = f"{info['id']}.{fmt}"
-    except yt_dlp.utils.DownloadError as e:
-        logging.exception("yt-dlp YouTube falhou")
-        return f"Erro ao obter mídia: {e}", 400
-    except Exception as e:
-        logging.exception("Exceção geral YouTube")
-        return f"Erro desconhecido: {e}", 500
-
-    def generate():
-        try:
-            with requests.get(media_url, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=16*1024):
-                    if chunk:
-                        yield chunk
-        except RequestException:
-            logging.exception("Erro no stream YouTube")
-            return
-        except Exception:
-            logging.exception("Exceção geral stream YouTube")
-            return
-
-    return Response(
-        stream_with_context(generate()),
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "audio/mpeg" if fmt == "mp3" else "video/mp4",
-        }
-    )
-
+        return str(e), 400
+    return render_template_string(HTML_BASE, stories=stories, username=username)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
