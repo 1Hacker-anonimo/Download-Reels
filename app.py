@@ -17,7 +17,7 @@ INDEX_PAGE = '''
     <style>
         *{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,Roboto,Arial,sans-serif}
         body{background:#0a0a0a;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-        .card{background:#111;border:1px solid #222;border-radius:12px;padding:40px 30px;max-width:420px;width:100%;text-align:center;box-shadow:0 0 25px #ff004433}
+        .card{background:#111;border:1px solid #222;border-radius:12px;padding:40px 30px;max-width:420px;width:100%;text-align:center;box-shadow:0 0 25px #ff0044333}
         h1{color:#ff0044;font-size:2.4rem;margin-bottom:12px;letter-spacing:1px;text-transform:uppercase}
         .sub{color:#aaa;font-size:1rem;margin-bottom:25px}
         form{display:flex;flex-direction:column;gap:15px}
@@ -63,7 +63,6 @@ INDEX_PAGE = '''
         </ol>
         <form action="/story" method="get">
             <input name="url" type="url" placeholder="https://www.instagram.com/stories/..." required>
->
             <button class="btn" type="submit">Baixar Story</button>
         </form>
 
@@ -155,7 +154,7 @@ def ig_stories_data(url_or_user: str):
             "Cookie": open("cookies.txt").read().replace("\n", "; "),  # envia cookies inline
         }
         r = requests.get(
-            f"https://i.instagram.com/api/v1/feed/reels_media/?reel_ids={user_id}",
+            f"https://i.instagram.com/api/v1/feed/reels_media/?rel_ids={user_id}",
             headers=headers,
             timeout=15,
         )
@@ -255,7 +254,7 @@ def story_dl():
         <div class="card mb-3" style="max-width:400px;margin:auto">
             <img src="{s['thumbnail']}" class="card-img-top">
             <div class="card-body text-center">
-                <span class="badge bg-secondary">{"Vídeo" if s['is_video'] else "Foto"}</span>
+                <span class="badge bg-secondary {'Vídeo' if s['is_video'] else 'Foto'}</span>
                 <a href="{s['url']}" class="btn btn-download mt-2" download>Baixar</a>
             </div>
         </div>
@@ -297,10 +296,10 @@ def youtube():
         return redirect("/")
 
     ydl_opts = {
-    "outtmpl": "static/%(title)s.%(ext)s",
-    "cookiefile": "cookies.txt",
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-}
+        "outtmpl": "static/%(title)s.%(ext)s",
+        "cookiefile": "cookies.txt",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
 
     if fmt == "mp3":
         ydl_opts.update({
@@ -308,7 +307,7 @@ def youtube():
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
                 "preferredquality": "192",
-            }]
+             }]
         })
 
     try:
@@ -347,3 +346,4 @@ def youtube():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+
