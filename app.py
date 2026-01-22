@@ -5,7 +5,6 @@ from requests.exceptions import RequestException
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ---------- HTML ----------
 INDEX_PAGE = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -104,20 +103,24 @@ INDEX_PAGE = '''
 </html>
 '''
 
-# ---------- TIKTOK SEM MARCA ----------
-API_BASE = "https://api.snaptik.app/v1"     # endpoint público sem chave
-
+# ---------- TIKTOK ----------
 def extract_video_id(url: str) -> str:
-    """Retorna o ID numérico de qualquer URL curta ou completa."""
-    m = re.search(r'(\d{17,20})', url)
+    """
+    Pega ID de qualquer URL TikTok (www, vm., m., t.tiktok.com, etc.)
+    """
+    # regex flexível – captura qualquer sequência de dígitos com 16+ caracteres
+    m = re.search(r'(?:video/|v=|vm/|/v/)(\d{16,})', url)
     if not m:
         raise ValueError("ID do vídeo não encontrado na URL")
     return m.group(1)
 
 def tiktok_nowm_url(video_id: str) -> str:
-    """Acessa API pública e devolve link direto sem watermark."""
+    """
+    API pública sem chave – devolve link direto sem watermark
+    """
+    api = f"https://api.snaptik.app/v1/info"
     r = requests.post(
-        f"{API_BASE}/info",
+        api,
         json={"url": f"https://www.tiktok.com/video/{video_id}"},
         timeout=15,
         headers={"user-agent": "Mozilla/5.0"},
@@ -126,7 +129,7 @@ def tiktok_nowm_url(video_id: str) -> str:
     data = r.json()
     if data.get("status") != "ok":
         raise ValueError(data.get("msg", "Erro desconhecido na API"))
-    return data["video"]["noWatermark"]        # link CDN sem logo
+    return data["video"]["noWatermark"]
 
 # ---------- ROTAS ----------
 @app.route("/")
@@ -254,4 +257,3 @@ def youtube():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
-
