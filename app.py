@@ -53,17 +53,11 @@ INDEX_PAGE = '''
 
     <!-- painel lateral -->
     <div id="sidePanel" class="side-panel">
-        <h2>Instagram Stories</h2>
-        <p>O perfil DEVE ser público. Copie o link da foto/vídeo dentro do story.</p>
-        <ol>
-            <li>Abra o perfil público no navegador.</li>
-            <li>Clique na story desejada.</li>
-            <li>Copie o URL (deve conter /stories/).</li>
-            <li>Coloque abaixo e clique em “Baixar Story”.</li>
-        </ol>
+        <h2>TikTok Sem Marca d'Água</h2>
+        <p>Copie o link do vídeo e clique em baixar.</p>
         <form action="/story" method="get">
-            <input name="url" type="url" placeholder="https://www.instagram.com/stories/..." required>
-            <button class="btn" type="submit">Baixar Story</button>
+            <input name="url" type="url" placeholder="https://www.tiktok.com/..." required>
+            <button class="btn" type="submit">Baixar TikTok</button>
         </form>
 
         <h2>YouTube</h2>
@@ -113,40 +107,12 @@ INDEX_PAGE = '''
             const url = document.getElementById('ytUrl').value.trim();
             if(!url) return alert('Cole um link do YouTube.');
             showLoader();
-            // abre a rota /yt com parâmetros
             window.location.href = `/yt?url=${encodeURIComponent(url)}&fmt=${fmt}`;
         }
     </script>
 </body>
 </html>
 '''
-
-# ---------- FUNÇÕES AUXILIARES ----------
-HEADERS_IG = {
-    "user-agent": "Instagram 261.0.0.19.103 Android (28/9; 420dpi; 1080x1920; samsung; SM-G973F; exynos9820; pt_BR; 380778764)",
-    "accept": "*/*",
-    "accept-encoding": "gzip, deflate",
-    "x-ig-app-id": "936619743392459",
-}
-
-def ig_story_json(shortcode: str) -> dict:
-    """
-    Pega JSON completo do story individual via API privada.
-    shortcode = parte final do URL:  https://www.instagram.com/stories/USER/SHORTCODE/
-    """
-    url = f"https://www.instagram.com/api/v1/feed/reels_media/?reel_ids={shortcode}"
-    HEADERS_IG["cookie"] = open("cookies.txt").read().replace("\n", "; ")
-    r = requests.get(url, headers=HEADERS_IG, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    if not data.get("reels") or not data["reels"][shortcode]["items"]:
-        raise ValueError("Story não encontrado ou perfil privado")
-    return data["reels"][shortcode]["items"][0]   # primeiro (e único) item
-
-def pick_best_url(item: dict) -> str:
-    if item.get("media_type") == 2:          # vídeo
-        return item["video_versions"][0]["url"]
-    return item["image_versions2"]["candidates"][0]["url"]   # foto
 
 # ---------- ROTAS ----------
 @app.route("/")
@@ -207,27 +173,52 @@ def download():
         }
     )
 
-@app.route("/story")       # Instagram Stories (API privada)
-def story_dl():
+# ---------- TIKTOK SEM MARCA D’ÁGUA ----------
+@app.route("/story")       # agora é TikTok
+def tiktok_dl():
     url = request.args.get("url")
     if not url:
         return redirect("/")
-    try:
-        shortcode = re.search(r"/stories/[^/]+/(\d+)", url).group(1)
-        item = ig_story_json(shortcode)
-        media_url = pick_best_url(item)
-    except Exception as e:
-        logging.exception("Story falhou")
-        return f"Story não encontrado ou perfil privado: {e}", 400
 
-    ext = "mp4" if "video" in media_url else "jpg"
-    filename = f"story.{ext}"
-    r = requests.get(media_url, stream=True, timeout=30)
+    # yt-dlp já pega o vídeo SEM watermark automaticamente
+    ydl_opts = {
+        "format": "best[ext=mp4]",
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_url = info["url"]
+            filename = f"{info['id']}.mp4"
+    except yt_dlp.utils.DownloadError as e:
+        logging.exception("yt-dlp TikTok falhou")
+        return f"Erro ao obter vídeo: {e}", 400
+    except Exception as e:
+        logging.exception("Exceção geral TikTok")
+        return f"Erro desconhecido: {e}", 500
+
+    def generate():
+        try:
+            with requests.get(video_url, stream=True, timeout=30) as r:
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=16*1024):
+                    if chunk:
+                        yield chunk
+        except RequestException:
+            logging.exception("Erro no stream TikTok")
+            return
+        except Exception:
+            logging.exception("Exceção geral stream TikTok")
+            return
+
     return Response(
-        stream_with_context(r.iter_content(chunk_size=16*1024)),
+        stream_with_context(generate()),
         headers={
             "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "video/mp4" if ext == "mp4" else "image/jpeg",
+            "Content-Type": "video/mp4",
         }
     )
 
