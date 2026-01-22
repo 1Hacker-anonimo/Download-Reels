@@ -121,27 +121,32 @@ INDEX_PAGE = '''
 </html>
 '''
 
-# ---------- FUNÇÕES # ---------- FUNÇÕES AUXILIARES ----------
-def story_raw(url: str) -> str:
-    """Baixa o HTML da página do story."""
-    headers = {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "cookie": open("cookies.txt").read().replace("\n", "; ")
-    }
-    r = requests.get(url, headers=headers, timeout=15)
-    r.raise_for_status()
-    return r.text
+# ---------- FUNÇÕES AUXILIARES ----------
+HEADERS_IG = {
+    "user-agent": "Instagram 261.0.0.19.103 Android (28/9; 420dpi; 1080x1920; samsung; SM-G973F; exynos9820; pt_BR; 380778764)",
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate",
+    "x-ig-app-id": "936619743392459",
+}
 
-def extract_story_url(html: str) -> str:
-    """Pega o .mp4 ou .jpg direto do window.__additionalData."""
-    vid = re.search(r'"video_url":"(https://[^"]+)"', html)
-    img = re.search(r'"image_url":"(https://[^"]+)"', html)
-    # Se nenhum der match, levanta ValueError
-    if not (vid or img):
-        raise ValueError("Nenhuma URL de mídia encontrada no HTML")
-    url = (vid or img).group(1).replace("\\u0026", "&")
-    return url
+def ig_story_json(shortcode: str) -> dict:
+    """
+    Pega JSON completo do story individual via API privada.
+    shortcode = parte final do URL:  https://www.instagram.com/stories/USER/SHORTCODE/
+    """
+    url = f"https://www.instagram.com/api/v1/feed/reels_media/?reel_ids={shortcode}"
+    HEADERS_IG["cookie"] = open("cookies.txt").read().replace("\n", "; ")
+    r = requests.get(url, headers=HEADERS_IG, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("reels") or not data["reels"][shortcode]["items"]:
+        raise ValueError("Story não encontrado ou perfil privado")
+    return data["reels"][shortcode]["items"][0]   # primeiro (e único) item
+
+def pick_best_url(item: dict) -> str:
+    if item.get("media_type") == 2:          # vídeo
+        return item["video_versions"][0]["url"]
+    return item["image_versions2"]["candidates"][0]["url"]   # foto
 
 # ---------- ROTAS ----------
 @app.route("/")
@@ -202,22 +207,19 @@ def download():
         }
     )
 
-@app.route("/story")       # Instagram Stories (bypass HTML)
+@app.route("/story")       # Instagram Stories (API privada)
 def story_dl():
     url = request.args.get("url")
     if not url:
         return redirect("/")
     try:
-        html = story_raw(url)
-        media_url = extract_story_url(html)
-    except ValueError as e:
-        logging.exception("Story não encontrado")
-        return f"Story não encontrado ou perfil privado: {e}", 400
+        shortcode = re.search(r"/stories/[^/]+/(\d+)", url).group(1)
+        item = ig_story_json(shortcode)
+        media_url = pick_best_url(item)
     except Exception as e:
-        logging.exception("Erro ao extrair story")
-        return f"Erro ao extrair story: {e}", 500
+        logging.exception("Story falhou")
+        return f"Story não encontrado ou perfil privado: {e}", 400
 
-    # devolve o arquivo direto
     ext = "mp4" if "video" in media_url else "jpg"
     filename = f"story.{ext}"
     r = requests.get(media_url, stream=True, timeout=30)
