@@ -1,76 +1,74 @@
 from flask import Flask, request, Response, redirect, stream_with_context
-import os, requests, logging, re
+import os, requests, logging
 from requests.exceptions import RequestException
-from urllib.parse import quote
 
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 INDEX_PAGE = '''
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" id="html">
 <head>
     <meta charset="UTF-8">
     <title>GLADIADOR – Downloader</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        :root {
+            --bg: #0a0a0a;
+            --card-bg: #111;
+            --text: #e0e0e0;
+            --accent: #ff0044;
+            --accent-hover: #e6003d;
+            --border: #222;
+            --sub: #aaa;
+        }
+        [data-theme="light"] {
+            --bg: #f5f5f5;
+            --card-bg: #ffffff;
+            --text: #222222;
+            --accent: #ff0044;
+            --accent-hover: #cc0037;
+            --border: #dddddd;
+            --sub: #666666;
+        }
         *{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,Roboto,Arial,sans-serif}
-        body{background:#0a0a0a;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-        .card{background:#111;border:1px solid #222;border-radius:12px;padding:40px 30px;max-width:420px;width:100%;text-align:center;box-shadow:0 0 25px #ff004433}
-        h1{color:#ff0044;font-size:2.4rem;margin-bottom:12px;letter-spacing:1px;text-transform:uppercase}
-        .sub{color:#aaa;font-size:1rem;margin-bottom:25px}
+        body{background:var(--bg);color:var(--text);min-height:100vh;padding:20px;display:flex;align-items:center;justify-content:center}
+        .card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:40px 30px;max-width:420px;width:100%;text-align:center;box-shadow:0 0 25px rgba(255,0,68,0.2)}
+        h1{color:var(--accent);font-size:2.4rem;margin-bottom:12px;letter-spacing:1px;text-transform:uppercase}
+        .sub{color:var(--sub);font-size:1rem;margin-bottom:25px}
         form{display:flex;flex-direction:column;gap:15px}
         input[type=url]{background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;padding:14px 16px;font-size:1rem;transition:border .2s}
-        input[type=url]:focus{border-color:#ff0044;outline:none}
-        .btn{background:#ff0044;color:#fff;border:none;border-radius:6px;padding:14px;font-size:1.05rem;font-weight:bold;cursor:pointer;transition:background .2s}
-        .btn:hover{background:#e6003d}
-        .foot{margin-top:30px;font-size:.75rem;color:#555}
-        .overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#000d;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:999}
+        input[type=url]:focus{border-color:var(--accent);outline:none}
+        .btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:14px;font-size:1.05rem;font-weight:bold;cursor:pointer;transition:background .2s;margin-top:10px}
+        .btn:hover{background:var(--accent-hover)}
+        .foot{margin-top:30px;font-size:.75rem;color:var(--sub)}
+        .overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:999}
         .overlay.show{display:flex}
-        .spinner{width:50px;height:50px;border:5px solid #222;border-top-color:#ff0044;border-radius:50%;animation:spin 1s linear infinite}
+        .spinner{width:50px;height:50px;border:5px solid #222;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
         @keyframes spin{to{transform:rotate(360deg)}}
-        .overlay p{margin-top:15px;color:#ff0044;font-weight:bold}
-
-        .menu-icon{position:fixed;top:20px;left:20px;cursor:pointer;z-index:1001}
-        .menu-icon span{display:block;width:28px;height:3px;background:#ff0044;margin:6px 0;transition:.3s}
-        .side-panel{position:fixed;top:0;left:-50%;width:50%;height:100%;background:#111;border-right:1px solid #222;padding:30px;overflow-y:auto;transition:left .3s;z-index:1000}
-        .side-panel.show{left:0}
-        .side-panel h2{color:#ff0044;margin-bottom:15px}
-        .side-panel p, .side-panel li{color:#ccc;font-size:.9rem;line-height:1.4;margin-bottom:10px}
-        .side-panel ul{margin-left:20px}
-        .side-panel input{width:100%;margin-bottom:10px}
-        .side-panel .btn{width:100%;margin-bottom:20px}
+        .overlay p{margin-top:15px;color:var(--accent);font-weight:bold}
+        .options{margin-top:30px;display:flex;flex-direction:column;gap:10px}
+        .theme-btn, .app-btn{background:#333;color:#fff;border:none;border-radius:6px;padding:12px;cursor:pointer;font-size:1rem}
+        .theme-btn:hover, .app-btn:hover{background:#444}
+        [data-theme="light"] .theme-btn, [data-theme="light"] .app-btn{background:#ddd;color:#222}
+        [data-theme="light"] .theme-btn:hover, [data-theme="light"] .app-btn:hover{background:#ccc}
     </style>
 </head>
 <body>
 
-    <div class="menu-icon" onclick="togglePanel()">
-        <span></span><span></span><span></span>
-    </div>
-
-    <div id="sidePanel" class="side-panel">
-        <h2>TikTok Sem Marca d'Água</h2>
-        <form action="/story" method="get">
-            <input name="url" type="url" placeholder="https://www.tiktok.com/..." required>
-            <button class="btn" type="submit">Baixar TikTok</button>
-        </form>
-
-        <h2>YouTube</h2>
-        <form id="ytForm">
-            <input id="ytUrl" type="url" placeholder="https://youtu.be/..." required>
-            <button class="btn" type="button" onclick="downloadYt('mp4')">Vídeo MP4</button>
-            <button class="btn" type="button" onclick="downloadYt('mp3')">Áudio MP3</button>
-        </form>
-    </div>
-
     <div class="card">
         <h1>GLADIADOR</h1>
-        <p class="sub">Cole o link do Instagram e o vídeo baixa automaticamente.</p>
+        <p class="sub">Cole o link do Reel e baixa automaticamente em HD</p>
 
         <form id="form" action="/dl" method="get">
             <input name="url" type="url" placeholder="https://www.instagram.com/reel/..." required>
-            <button class="btn" type="submit">Baixar</button>
+            <button class="btn" type="submit">Baixar Reel</button>
         </form>
+
+        <div class="options">
+            <button class="theme-btn" onclick="toggleTheme()">Mudar Tema (Escuro/Claro)</button>
+            <a href="#" class="app-btn" onclick="alert('Em breve: app para Android! Por enquanto use o site no navegador.'); return false;">Baixar o App</a>
+        </div>
 
         <div class="foot">Feito por <strong>GLADIADOR</strong> – 2026</div>
     </div>
@@ -81,10 +79,6 @@ INDEX_PAGE = '''
     </div>
 
     <script>
-        function togglePanel(){
-            document.getElementById('sidePanel').classList.toggle('show');
-        }
-
         function showLoader(){
             const l = document.getElementById('loader');
             l.classList.add('show');
@@ -93,23 +87,28 @@ INDEX_PAGE = '''
 
         document.getElementById('form').addEventListener('submit', showLoader);
 
-        function downloadYt(fmt){
-            const url = document.getElementById('ytUrl').value.trim();
-            if(!url) return alert('Cole um link do YouTube.');
-            showLoader();
-            window.location.href = `/yt?url=${encodeURIComponent(url)}&fmt=${fmt}`;
+        // Tema escuro/claro
+        function toggleTheme() {
+            const html = document.getElementById('html');
+            const current = html.getAttribute('data-theme') || 'dark';
+            const newTheme = current === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
         }
+
+        // Carregar tema salvo
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.getElementById('html').setAttribute('data-theme', savedTheme);
     </script>
 </body>
 </html>
 '''
 
-# ---------- ROTAS ----------
 @app.route("/")
 def home():
     return INDEX_PAGE
 
-@app.route("/dl")          # Instagram - seu original
+@app.route("/dl")  # Instagram Reels
 def download():
     url = request.args.get("url")
     if not url:
@@ -118,7 +117,7 @@ def download():
     username = os.getenv("IG_USER")
     password = os.getenv("IG_PASS")
     if not username or not password:
-        return "Configure IG_USER e IG_PASS no Render", 500
+        return "Configure IG_USER e IG_PASS nas variáveis de ambiente do Render", 500
 
     import yt_dlp
     ydl_opts = {
@@ -136,8 +135,8 @@ def download():
             video_url = info["url"]
             filename = f"{info['id']}.mp4"
     except Exception as e:
-        logging.exception("IG")
-        return f"Erro ao obter vídeo: {e}", 400
+        logging.exception("Erro Instagram")
+        return f"Erro ao obter vídeo do Instagram: {str(e)}<br><br>Verifique se o link é válido, público e se as credenciais estão corretas.", 400
 
     def generate():
         try:
@@ -147,124 +146,14 @@ def download():
                     if chunk:
                         yield chunk
         except RequestException:
-            logging.exception("stream IG")
+            logging.exception("Stream Instagram")
             return
+
     return Response(
         stream_with_context(generate()),
         headers={
             "Content-Disposition": f"attachment; filename={filename}",
             "Content-Type": "video/mp4",
-        }
-    )
-
-@app.route("/story")       # TikTok - NOVA VERSÃO COM YT-DLP
-def tiktok_dl():
-    url = request.args.get("url")
-    if not url:
-        return redirect("/")
-
-    try:
-        logging.info(f"TikTok URL recebida: {url}")
-
-        import yt_dlp
-
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "format": "best[ext=mp4]+bestaudio/best",  # Prioriza MP4 HD, combina áudio se necessário
-            "noplaylist": True,
-            "skip_download": True,
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "http_headers": {"Referer": "https://www.tiktok.com/"},
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-            if 'url' not in info or not info.get('url'):
-                raise ValueError("Não encontrou link direto do vídeo. Pode ser privado, restrito por região ou removido.")
-
-            direct_url = info['url']
-            video_id = info.get('id', 'tiktok')
-            title = re.sub(r'[^\w\-_\. ]', '_', info.get('title', 'video'))[:100]  # Limpa filename
-            filename = f"{title}_{video_id}.mp4"
-
-        def generate():
-            try:
-                with requests.get(direct_url, stream=True, timeout=45) as r:
-                    r.raise_for_status()
-                    for chunk in r.iter_content(chunk_size=16*1024):
-                        yield chunk
-            except Exception as stream_err:
-                logging.exception("Stream erro TikTok")
-                raise
-
-        return Response(
-            stream_with_context(generate()),
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type": "video/mp4",
-            }
-        )
-
-    except Exception as e:
-        logging.exception("TikTok erro")
-        return f"""
-        Erro ao obter vídeo TikTok: {str(e)}<br><br>
-        Dicas rápidas:<br>
-        - Certifique-se de que o vídeo é **público** e disponível no Brasil.<br>
-        - Teste com outro vídeo viral recente (abra no app TikTok e copie o link).<br>
-        - Short links (vt.tiktok.com) são suportados automaticamente.<br>
-        - Se persistir em todos os vídeos, pode ser bloqueio de IP do servidor – teste rodando localmente no PC.<br><br>
-        <a href="/">Voltar ao início</a>
-        """, 400
-
-@app.route("/yt")          # YouTube - seu original
-def youtube():
-    url = request.args.get("url")
-    fmt = request.args.get("fmt")
-    if not url or fmt not in ("mp4", "mp3"):
-        return redirect("/")
-
-    import yt_dlp
-    ydl_opts = {
-        "outtmpl": "static/%(title)s.%(ext)s",
-        "cookiefile": "cookies.txt",
-        "user_agent": "Mozilla/5.0",
-    }
-    if fmt == "mp3":
-        ydl_opts.update({
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        })
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            media_url = info["url"]
-            filename = f"{info['id']}.{fmt}"
-    except Exception as e:
-        logging.exception("YT")
-        return f"Erro ao obter mídia: {e}", 400
-
-    def generate():
-        try:
-            with requests.get(media_url, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=16*1024):
-                    if chunk:
-                        yield chunk
-        except RequestException:
-            logging.exception("stream YT")
-            return
-    return Response(
-        stream_with_context(generate()),
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "audio/mpeg" if fmt == "mp3" else "video/mp4",
         }
     )
 
