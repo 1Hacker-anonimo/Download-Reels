@@ -6,6 +6,7 @@ from urllib.parse import quote
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
+# Seu INDEX_PAGE original (cole aqui o HTML completo se alterou algo)
 INDEX_PAGE = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -104,85 +105,90 @@ INDEX_PAGE = '''
 </html>
 '''
 
-# ---------- TIKTOK ----------
+# ---------- TIKTOK FUNÇÕES ----------
+def expand_tiktok_short_url(short_url: str) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        # Tenta HEAD (leve, só headers)
+        r = requests.head(short_url, headers=headers, allow_redirects=True, timeout=8)
+        final_url = r.url
+
+        if 'tiktok.com' not in final_url or '/video/' not in final_url:
+            # Se não redirecionou bem, tenta GET completo
+            r = requests.get(short_url, headers=headers, allow_redirects=True, timeout=10)
+            final_url = r.url
+
+        logging.info(f"Short URL expandida: {short_url} -> {final_url}")
+        return final_url
+    except Exception as e:
+        logging.error(f"Erro expandindo short: {e}")
+        raise ValueError(f"Não consegui expandir o short link ({short_url}). Tente abrir no navegador e copiar a URL completa.")
+
 def extract_video_id(url: str) -> str:
-    """
-    Extrai o ID do vídeo TikTok de qualquer formato de URL (2026 compatível)
-    """
-    # Remove query strings e fragments
     clean_url = re.sub(r'\?.*$', '', url).rstrip('/')
-
-    # Padrões comuns em 2026
     patterns = [
-        r'/video/(\d{18,})',                  # Padrão principal: /@user/video/123...
-        r'/v/(\d{18,})',                      # Mobile: /v/123...
-        r'vt\.tiktok\.com/[^/]+/(\d+)',       # Short vt.tiktok.com/...
-        r't\.tiktok\.com/[^/]+/(\d+)',        # Outro short
-        r'm\.tiktok\.com/v/(\d+)',            # m.tiktok.com/v/...
-        r'(\d{18,})',                         # Último recurso: ID solto longo
+        r'/video/(\d{18,})',
+        r'/v/(\d{18,})',
+        r'm\.tiktok\.com/v/(\d+)',
+        r'(\d{18,})',  # Último recurso
     ]
-
     for pattern in patterns:
         match = re.search(pattern, clean_url)
         if match:
-            video_id = match.group(1)
-            logging.info(f"ID encontrado com padrão '{pattern}': {video_id}")
-            return video_id
+            vid = match.group(1)
+            logging.info(f"ID extraído: {vid} de {clean_url}")
+            return vid
+    raise ValueError("ID não encontrado na URL expandida. Certifique-se que o link é de vídeo público.")
 
-    raise ValueError("ID do vídeo não encontrado na URL. Certifique-se de que é um link válido de vídeo TikTok (ex: https://www.tiktok.com/@user/video/7501234567890123456)")
-
-def get_tiktok_no_watermark_url(tiktok_url: str) -> str:
+def get_tiktok_no_watermark_url(original_url: str) -> str:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://www.tiktok.com/"
     }
 
-    # Tentativa 1: SnapTik API (se ainda funcionar)
+    # Tentativa SnapTik
     try:
         api = "https://api.snaptik.app/v1/info"
-        payload = {"url": tiktok_url}
+        payload = {"url": original_url}
         r = requests.post(api, json=payload, headers=headers, timeout=12)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("status") == "ok":
-            nw_url = data["video"].get("noWatermark") or data["video"].get("no_watermark")
-            if nw_url:
-                logging.info("SnapTik API funcionou!")
-                return nw_url
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "ok":
+                nw = data.get("video", {}).get("noWatermark") or data.get("video", {}).get("no_watermark")
+                if nw:
+                    logging.info("SnapTik API OK")
+                    return nw
     except Exception as e:
-        logging.warning(f"SnapTik API falhou: {e}")
+        logging.warning(f"SnapTik falhou: {e}")
 
-    # Fallback: SSSTik (parse HTML - mais estável em 2026)
+    # Fallback SSSTik (aceita short links)
     try:
-        ssstik_endpoint = f"https://ssstik.io/abc?url={quote(tiktok_url)}"
-        resp = requests.get(ssstik_endpoint, headers=headers, timeout=15)
+        ssstik_url = f"https://ssstik.io/abc?url={quote(original_url)}"
+        resp = requests.get(ssstik_url, headers=headers, timeout=15)
         resp.raise_for_status()
-
-        # Procura link sem watermark (padrão comum no HTML)
-        match = re.search(r'href="(https?://[^"]*without[_-]?watermark[^"]*)"', resp.text, re.IGNORECASE)
+        match = re.search(r'href="(https?://[^"]*without[_-]?watermark[^"]*)"', resp.text, re.IGNORECASE | re.DOTALL)
         if match:
-            nw_url = match.group(1)
-            logging.info("SSSTik fallback funcionou!")
-            return nw_url
-
-        # Alternativa: procura por 'without wm' ou classes comuns
-        match_alt = re.search(r'(https?://[^"\']+\.mp4[^"\']*without[^"\']*)', resp.text, re.IGNORECASE)
+            nw = match.group(1)
+            logging.info("SSSTik OK (without watermark)")
+            return nw
+        match_alt = re.search(r'(https?://[^"\']+\.mp4[^"\']*without[^"\']*)', resp.text, re.IGNORECASE | re.DOTALL)
         if match_alt:
-            nw_url = match_alt.group(1)
-            logging.info("SSSTik alt match funcionou!")
-            return nw_url
-
+            logging.info("SSSTik alt OK")
+            return match_alt.group(1)
     except Exception as e:
-        logging.warning(f"SSSTik fallback falhou: {e}")
+        logging.warning(f"SSSTik falhou: {e}")
 
-    raise ValueError("Não foi possível obter link sem watermark (SnapTik e SSSTik falharam). Tente outra URL ou verifique se o vídeo é público.")
+    raise ValueError("Falha em obter link sem watermark. Tente outro vídeo ou verifique se é público.")
 
 # ---------- ROTAS ----------
 @app.route("/")
 def home():
     return INDEX_PAGE
 
-@app.route("/dl")          # Instagram
+@app.route("/dl")
 def download():
     url = request.args.get("url")
     if not url:
@@ -210,58 +216,55 @@ def download():
             filename = f"{info['id']}.mp4"
     except Exception as e:
         logging.exception("IG erro")
-        return f"Erro ao obter vídeo Instagram: {str(e)}", 400
+        return f"Erro Instagram: {str(e)}", 400
 
     def generate():
-        try:
-            with requests.get(video_url, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=16*1024):
-                    if chunk:
-                        yield chunk
-        except RequestException:
-            logging.exception("stream IG")
-    return Response(
-        stream_with_context(generate()),
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "video/mp4",
-        }
-    )
+        with requests.get(video_url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            for chunk in r.iter_content(chunk_size=16*1024):
+                yield chunk
 
-@app.route("/story")       # TikTok Sem Marca
+    return Response(stream_with_context(generate()), headers={
+        "Content-Disposition": f"attachment; filename={filename}",
+        "Content-Type": "video/mp4",
+    })
+
+@app.route("/story")
 def tiktok_dl():
     url = request.args.get("url")
     if not url:
         return redirect("/")
 
     try:
-        logging.info(f"Processando TikTok URL: {url}")
-        video_id = extract_video_id(url)
-        logging.info(f"ID extraído: {video_id}")
+        logging.info(f"URL recebida: {url}")
 
-        # Pega URL sem watermark
-        video_url = get_tiktok_no_watermark_url(url)
+        # Expande short link se necessário
+        if re.match(r'https?://(vt|vm|t)\.tiktok\.com/', url, re.IGNORECASE):
+            expanded = expand_tiktok_short_url(url)
+        else:
+            expanded = url
+
+        video_id = extract_video_id(expanded)
+
+        # Pega no watermark usando URL original (serviços aceitam short)
+        video_url_nw = get_tiktok_no_watermark_url(url)
 
         filename = f"tiktok_{video_id}.mp4"
-        r = requests.get(video_url, stream=True, timeout=30, headers={
+        r = requests.get(video_url_nw, stream=True, timeout=30, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
         r.raise_for_status()
 
-        return Response(
-            stream_with_context(r.iter_content(chunk_size=16*1024)),
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Type": "video/mp4",
-            }
-        )
+        return Response(stream_with_context(r.iter_content(chunk_size=16*1024)), headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "video/mp4",
+        })
 
     except Exception as e:
-        logging.exception("TikTok erro completo")
-        return f"Erro ao obter vídeo TikTok: {str(e)}<br><br>Dica: Use um link completo como https://www.tiktok.com/@usuario/video/7501234567890123456", 400
+        logging.exception("TikTok erro")
+        return f"Erro TikTok: {str(e)}<br><br>Dica: Abra o link no navegador, copie a URL completa (com /video/ID) e tente novamente. Pode ser vídeo privado ou restrito.", 400
 
-@app.route("/yt")          # YouTube
+@app.route("/yt")
 def youtube():
     url = request.args.get("url")
     fmt = request.args.get("fmt")
@@ -290,24 +293,18 @@ def youtube():
             filename = f"{info['id']}.{fmt}"
     except Exception as e:
         logging.exception("YT erro")
-        return f"Erro ao obter mídia YouTube: {str(e)}", 400
+        return f"Erro YouTube: {str(e)}", 400
 
     def generate():
-        try:
-            with requests.get(media_url, stream=True, timeout=30) as r:
-                r.raise_for_status()
-                for chunk in r.iter_content(chunk_size=16*1024):
-                    if chunk:
-                        yield chunk
-        except RequestException:
-            logging.exception("stream YT")
-    return Response(
-        stream_with_context(generate()),
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}",
-            "Content-Type": "audio/mpeg" if fmt == "mp3" else "video/mp4",
-        }
-    )
+        with requests.get(media_url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            for chunk in r.iter_content(chunk_size=16*1024):
+                yield chunk
+
+    return Response(stream_with_context(generate()), headers={
+        "Content-Disposition": f"attachment; filename={filename}",
+        "Content-Type": "audio/mpeg" if fmt == "mp3" else "video/mp4",
+    })
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
